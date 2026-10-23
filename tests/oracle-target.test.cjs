@@ -121,6 +121,7 @@ test('6: diff refuses a defaulted target B before contacting either target', { s
   const s = startServer(dir);
   try {
     config(dir, {
+      default: { baseUrl: '${T_A_URL}', env: { DATABASE_URL: '${T_A_DB}' } }, // amendment: the schema requires a default target
       a: { baseUrl: '${T_A_URL}', env: { DATABASE_URL: '${T_A_DB}' } },
       b: { baseUrl: '${T_B_URL}', env: { DATABASE_URL: '${T_B_DB:-postgres://localhost/b}' } },
     });
