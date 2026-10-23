@@ -4,7 +4,7 @@
 
 A curated set of AI agent skills that enforce a rigorous **Spec-Driven Development (SDD)** pipeline. Every skill ensures specifications are written, hardened, and phase-planned *before* implementation code is generated. If your project has a `specs/` folder, these skills govern the entire lifecycle — from ideation through adversarial review to verified, production-ready code.
 
-**🎯 Spec First** · **🔴 Adversarial Hardening** · **🔵 Builder–Critic Swarms** · **✅ Empirical Verification** · **🏷️ Template `2026.10.01-v3+sky.2`** · [**📖 Interactive Visual Guide**](./sdd-icm-documentation.html)
+**🎯 Spec First** · **🔴 Adversarial Hardening** · **🔵 Builder–Critic Swarms** · **✅ Empirical Verification** · **🏷️ Template `2026.10.01-v3+sky.3`** · [**📖 Interactive Visual Guide**](./sdd-icm-documentation.html)
 
 ## Quick Start
 

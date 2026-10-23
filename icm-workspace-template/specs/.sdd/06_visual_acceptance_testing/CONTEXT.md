@@ -20,15 +20,16 @@ Browser-based visual acceptance testing for UI projects. Walks every screen in t
 **MANDATORY** ∀ UI project types (`fullstack-app`, `client-side-app`, `game`). Non-UI projects skip this stage (`sdd.cjs transition --completed 05` skips it automatically).
 
 #### Step 0: Frozen UI Specs
-Run the black-box UI specs and keep the report as evidence:
+Run the black-box UI specs through the oracle, on committed code, and keep the report as evidence:
 ```bash
-ORACLE_UI_URL=<build url> PLAYWRIGHT_JSON_OUTPUT_FILE=specs/logs/ui-e2e.json npx playwright test --config specs/fixtures/ui/playwright.config.ts --reporter=json
+ORACLE_UI_URL=<build url> node specs/.sdd/scripts/oracle.cjs ui
 ```
+It runs the frozen Playwright config and stamps `specs/logs/ui-e2e.json` with the code it graded (`ui-e2e.stamp.json`). The gates refuse a report Playwright wrote directly (`UI_NO_STAMP`), one changed after stamping (`UI_REPORT_REPLACED`), and one whose code has changed since (`EVIDENCE_TREE_CHANGED`).
 Any failed or flaky test = VAT FAIL. ⊥ edit the specs to make them pass (frozen set).
 
 Specs tagged `@keyboard` or `@focus` also run repeated — one "0 flaky" pass does not show a focus race:
 ```bash
-ORACLE_UI_URL=<build url> PLAYWRIGHT_JSON_OUTPUT_FILE=specs/logs/ui-repeat.json npx playwright test --config specs/fixtures/ui/playwright.config.ts --grep "@keyboard|@focus" --repeat-each=20 --reporter=json
+ORACLE_UI_URL=<build url> node specs/.sdd/scripts/oracle.cjs ui --out specs/logs/ui-repeat.json --grep "@keyboard|@focus" --repeat-each=20
 ```
 Cite the repeat count and pass count in `VAT_REPORT.md`. Any failure in the repeat = VAT FAIL.
 
@@ -95,7 +96,7 @@ Save ∀ screenshots taken during Screen Walk → `specs/logs/vat/<screen>.png` 
 ## Outputs
 - `specs/vat-checklist.md`
 - `specs/VAT_REPORT.md` (format: `vat-report-format.md`, ending in a `**Verdict:** PASS | FAIL` line)
-- `specs/logs/ui-e2e.json`, `specs/logs/ui-repeat.json` (if tagged specs exist), `specs/logs/06-token-audit.md`, `specs/logs/vat/*.png`
+- `specs/logs/ui-e2e.json`, `specs/logs/ui-repeat.json` (if tagged specs exist), each with its `.stamp.json`, `specs/logs/06-token-audit.md`, `specs/logs/vat/*.png`
 - `specs/.sdd/_config/sdd-state.json` (via `sdd.cjs transition`)
 
 ### Handoff / Transitions

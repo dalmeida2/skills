@@ -4,6 +4,7 @@
  * oracle.cjs — the single, implementation-agnostic grader for SDD projects. Zero dependencies (Node.js >= 18).
  *
  *   node specs/.sdd/scripts/oracle.cjs run    [--target default] [--phase N] [--case ID,ID] [--suite S] [--bail]
+ *   node specs/.sdd/scripts/oracle.cjs ui     [--out specs/logs/ui-e2e.json] [playwright args]
  *   node specs/.sdd/scripts/oracle.cjs diff   [--a a] [--b b] [--phase N] [--case ID,ID] [--suite S]
  *   node specs/.sdd/scripts/oracle.cjs record --target T --out FILE [--cases-dir DIR] [--case ID,ID] [--suite S]
  *   node specs/.sdd/scripts/oracle.cjs diff-ui --a OBS_A.jsonl --b OBS_B.jsonl --b-root DIR
@@ -13,6 +14,7 @@
  *   node specs/.sdd/scripts/oracle.cjs strip-expect --from DIR|FILE --out DIR
  *
  * run    — grade one build against every expectation in specs/fixtures/cases/ (probe cases skipped).
+ * ui     — run the frozen Playwright suite (specs/fixtures/ui/) and stamp its JSON report with the code it graded.
  * diff   — run the same cases (probes included) against two independent builds and report every
  *          observation that differs outside the declared degrees of freedom.
  * record — characterize an existing build: fill in missing expectations from what it actually does
@@ -32,10 +34,12 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const L = require('./sdd-lib.cjs');
+const E = require('./evidence.cjs');
 const { generateProbes } = require('./probes.cjs');
 
 const USAGE = `Usage:
   oracle.cjs run     [--target default] [--phase N] [--case ID,ID] [--suite S] [--bail] [--verbose]
+  oracle.cjs ui      [--out specs/logs/ui-e2e.json] [playwright args]
   oracle.cjs diff    [--a a] [--b b] --b-root DIR [--phase N] [--case ID,ID] [--suite S]
   oracle.cjs record  --target T --out FILE [--cases-dir DIR] [--case ID,ID] [--suite S]
   oracle.cjs diff-ui --a OBS_A.jsonl --b OBS_B.jsonl --b-root DIR
@@ -200,6 +204,19 @@ function httpStep(target, req, timeoutMs) {
     if (body !== undefined) r.write(body);
     r.end();
   });
+}
+
+/**
+ * The build the app says it is, from the optional `X-SDD-Build` header on the readiness probe, else GET /healthz (HTTP-6).
+ * A header, not a body field, so declaring it changes no frozen case. null when the app declares none.
+ */
+async function buildId(cfg, target) {
+  if (!target.baseUrl) return null;
+  const probe = (cfg.readiness && cfg.readiness.http) || { method: 'GET', path: '/healthz' };
+  try {
+    const res = await fetch(target.baseUrl + probe.path, { method: probe.method || 'GET', signal: AbortSignal.timeout(2000) });
+    return res.headers.get('x-sdd-build') || null;
+  } catch { return null; }
 }
 
 async function waitReady(cfg, target) {
@@ -384,8 +401,8 @@ async function cmdRun(p, args) {
   else if (!lock.lockValid) console.log('⚠ frozen set modified since the last freeze: results will not count as evidence (sdd.cjs verify)');
   await waitReady(cfg, target);
   const startedAt = new Date().toISOString();
-  // The tree being graded: `sdd.cjs phase --completed N` accepts a run only at a clean, committed HEAD.
-  const git = L.gitState(p.root);
+  // What is being graded (evidence.cjs): stamped now, sealed after the last case, so code edited mid-run shows.
+  const start = E.stamp(p.root, { build: await buildId(cfg, target) });
   const results = [];
   for (const c of selected) {
     const r = await runCase(p, cfg, target, c, 'assert', L.newGenerator());
@@ -411,7 +428,7 @@ async function cmdRun(p, args) {
     ...lock,
     filtered: filtered || !!args.flags.bail,
     filters: { phase: args.flags.phase, case: args.flags.case, suite: args.flags.suite, bail: !!args.flags.bail },
-    git: git ? { head: git.head, dirty: git.dirty.slice(0, 50), dirtyCount: git.dirty.length } : null,
+    evidence: E.seal(p.root, start),
     startedAt,
     finishedAt: new Date().toISOString(),
     total: selected.length,
@@ -988,13 +1005,69 @@ async function cmdRecord(p, args) {
   return 0;
 }
 
+// ========== ui ==========
+
+const UI_CONFIG = 'specs/fixtures/ui/playwright.config.ts';
+// Playwright's own output (traces, screenshots, .last-run.json) defaults to a folder beside the config, inside the
+// frozen set, where it would break the lock (#29). It goes to a working path instead, unless the caller sets --output.
+const UI_ARTIFACTS = 'specs/logs/ui-artifacts';
+
+/**
+ * How to start Playwright: its CLI through this Node when the project has it installed (no shell, so arguments such as
+ * --grep "@keyboard|@focus" pass unchanged on every platform), otherwise npx where that needs no shell.
+ */
+function playwrightCommand(root) {
+  for (const id of ['@playwright/test/cli', 'playwright/cli']) {
+    try { return [process.execPath, [require.resolve(id, { paths: [root] })]]; } catch { /* not installed here */ }
+  }
+  if (process.platform === 'win32') return null;
+  return ['npx', ['playwright']];
+}
+
+/**
+ * Run the frozen Playwright suite and stamp its report beside it (evidence.cjs), so the UI gates can tell which
+ * code it graded. Arguments other than --out and --root go to Playwright unchanged (spec files, --grep, --repeat-each).
+ */
+async function cmdUi(p) {
+  const raw = process.argv.slice(2);
+  raw.splice(raw.indexOf('ui'), 1);
+  const pass = [];
+  let out = 'specs/logs/ui-e2e.json';
+  for (let i = 0; i < raw.length; i++) {
+    const a = raw[i];
+    if (a === '--out') { out = raw[++i]; continue; }
+    if (a === '--root') { i++; continue; }
+    if (a.startsWith('--out=')) { out = a.slice(6); continue; }
+    if (a.startsWith('--root=')) continue;
+    pass.push(a);
+  }
+  if (!/^specs\/logs\/[^/]+\.json$/.test(out || '')) fail('--out must be a .json file directly under specs/logs/');
+  if (!fs.existsSync(path.join(p.root, UI_CONFIG))) fail(`no ${UI_CONFIG}: the frozen UI suite is written before the freeze`);
+  const outAbs = path.join(p.root, out);
+  fs.mkdirSync(path.dirname(outAbs), { recursive: true });
+  // A run that dies must not leave an older report or stamp behind to be read as this run's.
+  for (const f of [outAbs, path.join(p.root, E.stampPath(out))]) fs.rmSync(f, { force: true });
+  const pw = playwrightCommand(p.root);
+  if (!pw) fail('Playwright is not installed in this project (npm i -D @playwright/test); on Windows oracle.cjs ui runs only the project\'s own copy');
+  if (!pass.some(a => a === '--output' || a.startsWith('--output='))) pass.push(`--output=${UI_ARTIFACTS}`);
+  // The UI suite's base URL (ORACLE_UI_URL) is the app being graded: ask it which build it is (HTTP-6 X-SDD-Build).
+  const uiUrl = process.env.ORACLE_UI_URL;
+  const start = E.stamp(p.root, { build: uiUrl ? await buildId({}, { baseUrl: uiUrl.replace(/\/+$/, '') }) : null });
+  const r = spawnSync(pw[0], [...pw[1], 'test', '--config', UI_CONFIG, '--reporter=line,json', ...pass], { cwd: p.root, stdio: 'inherit', env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_FILE: out } });
+  if (r.error) fail(`could not start Playwright (${r.error.message})`);
+  if (!fs.existsSync(outAbs)) fail(`Playwright wrote no ${out} (exit ${r.status}); nothing to stamp`);
+  E.writeUiStamp(p.root, out, E.seal(p.root, start));
+  console.log(`\n→ ${out}, stamped in ${E.stampPath(out)}`);
+  return r.status === null ? 2 : r.status;
+}
+
 // ========== main ==========
 
 async function main() {
   const args = L.parseArgs(process.argv.slice(2));
   const root = typeof args.flags.root === 'string' ? path.resolve(args.flags.root) : L.defaultRoot();
   const p = L.projectPaths(root);
-  const commands = { run: cmdRun, diff: cmdDiff, record: cmdRecord, 'diff-ui': cmdDiffUi, env: cmdEnv, 'gen-probes': cmdGenProbes, 'diff-expect': cmdDiffExpect, 'strip-expect': cmdStripExpect };
+  const commands = { run: cmdRun, ui: cmdUi, diff: cmdDiff, record: cmdRecord, 'diff-ui': cmdDiffUi, env: cmdEnv, 'gen-probes': cmdGenProbes, 'diff-expect': cmdDiffExpect, 'strip-expect': cmdStripExpect };
   const cmd = commands[args._[0]];
   if (!cmd) { console.log(USAGE); return args._[0] ? 2 : 0; }
   return cmd(p, args);

@@ -1,6 +1,6 @@
 # SDD ICM Workspace Template
 
-> **Release Version:** `2026.10.01-v3+sky.2` — Skymantics CLI variant of `2026.10.01-v3`. Every difference from upstream `v3` is a labeled commit on `skymantics-cli/v3`.
+> **Release Version:** `2026.10.01-v3+sky.3` — Skymantics CLI variant of `2026.10.01-v3`. Every difference from upstream `v3` is a labeled commit on `skymantics-cli/v3`.
 
 A portable, agent-agnostic workspace template that enforces the **Spec-Driven Development (SDD)** pipeline through filesystem structure and a small set of zero-dependency tools, so that independent coding agents built from the same spec produce **observationally equivalent** systems — and so that claim can be checked.
 
@@ -220,6 +220,16 @@ v3 challenges several v2 decisions that worked against the equivalence goal:
 | Error envelope labelled RFC 9457 but non-compliant; three codes for OCC conflicts | RFC 9457 problem details; one canonical code table | A self-contradictory standard forks builders |
 | Pinned directory layout and dependencies | Pinned *observable* environment; internals free | Layout is not observable; DB collation is |
 
+## Upgrading a project to `+sky.3`
+
+Evidence is bound to the code it graded (`oracle-standard.md` §Evidence binding). The tools are in the frozen set, so this is a re-freeze with the user's approval (`--reason "pipeline: 2026.10.01-v3+sky.3"`). What changes for a running project:
+
+- **UI reports.** Run the frozen UI specs through `ORACLE_UI_URL=<build url> node specs/.sdd/scripts/oracle.cjs ui`, which stamps the report and keeps Playwright's output out of the frozen set (`specs/logs/ui-artifacts/`). A `ui-e2e.json` or `ui-repeat.json` written by Playwright directly is refused (`UI_NO_STAMP`): re-run each once after upgrading.
+- **Oracle runs.** A `+sky.2` run report stays valid while the code is unchanged (its tree is derived from the commit it recorded). A report from before `+sky.2` is refused (`EVIDENCE_NO_STAMP`): re-run it.
+- **Freshness.** Evidence no longer has to be newer than the stage start or the lock date. It has to match the current code and lock, so committing a report, writing a stage report after the run, or rebasing without code changes keeps it valid; any change to a file outside `specs/` makes it stale.
+- **Build identity (optional).** An app may send `X-SDD-Build: <commit>` from `GET /healthz` (HTTP-6). The oracle then refuses evidence graded against a build from other code.
+- **Token audits.** A measured value that cannot be compared with its token (e.g. `var(--x)` against `#FFFFFF`) is refused as `CSS_UNCOMPARABLE` instead of passing; `rem`/`em` (at 16px) and basic colour names are converted.
+
 ## Upgrading a project to `+sky.2`
 
 The template is in the frozen set, so upgrading is a re-freeze with the user's approval. What changes for a running project:
@@ -246,7 +256,7 @@ This template implements the same pipeline as the [SDD skills](../README.md), de
 Check the version header in `specs/.sdd/WORKSPACE_ROUTING.md`:
 ```html
 <!-- sdd-icm-template -->
-<!-- version: 2026.10.01-v3+sky.2 -->
+<!-- version: 2026.10.01-v3+sky.3 -->
 <!-- source: github.com/dalmeida2/skills@skymantics-cli/v3 (base: github.com/Wilberto-lopez-skymantics/skills@v3) -->
 ```
 

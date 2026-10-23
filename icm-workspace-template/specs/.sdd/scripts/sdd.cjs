@@ -17,6 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const L = require('./sdd-lib.cjs');
+const E = require('./evidence.cjs');
 
 const USAGE = `Usage:
   sdd.cjs status                         Current stage, lock, evidence, and the next stage's exit gates
@@ -674,47 +675,50 @@ function latestReport(p, prefix, accept) {
   return reports[0] || null;
 }
 
-function oracleRunGate(p, lock, freshAfter) {
+/** The full oracle run on "default", then whether it graded the code as it is now (evidence.cjs). */
+function oracleRunGates(p, lock) {
   // Stage evidence is the "default" target only: a green run on another target says nothing about this build.
   const rep = latestReport(p, 'run-default', x => x.target === 'default');
-  if (!rep) return [false, 'no oracle run on target "default" (run: node specs/.sdd/scripts/oracle.cjs run)'];
-  if (!lock || rep.lockHash !== lock.hash || !rep.lockValid) return [false, 'latest oracle run on "default" was not made against the current, intact lock; re-run'];
-  if (rep.filtered) return [false, 'latest oracle run on "default" was filtered (--phase/--case/--suite/--bail); run the full oracle'];
-  if (freshAfter && !(rep.finishedAt > freshAfter)) return [false, `latest oracle run (${rep.finishedAt}) predates this stage (${freshAfter}); re-run for fresh evidence`];
-  if (rep.failed || rep.errored || !rep.total) return [false, `oracle run on "default": ${rep.passed}/${rep.total} passed, ${rep.failed} failed, ${rep.errored} errored`];
-  return [true, `oracle run on "default": ${rep.passed}/${rep.total} passed against lock ${lock.hash.slice(0, 12)}`];
+  if (!rep) return [[false, 'no oracle run on target "default" (run: node specs/.sdd/scripts/oracle.cjs run)']];
+  const binding = E.gate(E.check(p.root, rep));
+  if (!lock || rep.lockHash !== lock.hash || !rep.lockValid) return [[false, 'latest oracle run on "default" was not made against the current, intact lock; re-run'], binding];
+  if (rep.filtered) return [[false, 'latest oracle run on "default" was filtered (--phase/--case/--suite/--bail); run the full oracle'], binding];
+  if (rep.failed || rep.errored || !rep.total) return [[false, `oracle run on "default": ${rep.passed}/${rep.total} passed, ${rep.failed} failed, ${rep.errored} errored`], binding];
+  return [[true, `oracle run on "default": ${rep.passed}/${rep.total} passed against lock ${lock.hash.slice(0, 12)}`], binding];
 }
 
 function uiSpecFiles(p) {
   return L.listFiles(p.uiFixtures).filter(f => /\.(spec|test)\.[cm]?[jt]s$/.test(f));
 }
 
-function uiGate(p, lock, freshAfter) {
-  const f = path.join(p.logs, 'ui-e2e.json');
-  if (!exists(f)) return [false, 'no specs/logs/ui-e2e.json (PLAYWRIGHT_JSON_OUTPUT_FILE=specs/logs/ui-e2e.json npx playwright test --config specs/fixtures/ui/playwright.config.ts --reporter=json)'];
+const UI_E2E = 'specs/logs/ui-e2e.json';
+
+/** The UI report, then whether its stamp binds it to the code as it is now (evidence.cjs). */
+function uiGates(p) {
+  const f = path.join(p.root, UI_E2E);
+  if (!exists(f)) return [[false, `no ${UI_E2E} (ORACLE_UI_URL=<build url> node specs/.sdd/scripts/oracle.cjs ui)`]];
   let rep;
-  try { rep = L.readJson(f); } catch (e) { return [false, e.message]; }
-  const mtime = fs.statSync(f).mtime.toISOString();
-  if (!lock || !(mtime > lock.frozenAt)) return [false, 'specs/logs/ui-e2e.json predates the current lock; re-run the UI specs'];
-  if (freshAfter && !(mtime > freshAfter)) return [false, 'specs/logs/ui-e2e.json predates this stage; re-run the UI specs'];
+  try { rep = L.readJson(f); } catch (e) { return [[false, e.message]]; }
+  const binding = E.gate(E.checkUi(p.root, UI_E2E));
   const ran = new Set((rep.suites || []).map(s => path.basename(String(s.file || ''))));
   const missing = uiSpecFiles(p).map(x => path.basename(x)).filter(b => !ran.has(b));
-  if (missing.length) return [false, `UI report did not run every frozen spec (missing: ${missing.join(', ')}); run the whole suite`];
+  if (missing.length) return [[false, `UI report did not run every frozen spec (missing: ${missing.join(', ')}); run the whole suite`], binding];
   const st = rep.stats || {};
   // A flaky UI spec is observable nondeterminism, so it fails the gate like a hard failure.
-  if (!(st.expected > 0) || st.unexpected || st.flaky) return [false, `UI specs: ${st.expected || 0} passed, ${st.unexpected || 0} failed, ${st.flaky || 0} flaky`];
-  return [true, `UI specs: ${st.expected} passed, 0 failed, 0 flaky`];
+  if (!(st.expected > 0) || st.unexpected || st.flaky) return [[false, `UI specs: ${st.expected || 0} passed, ${st.unexpected || 0} failed, ${st.flaky || 0} flaky`], binding];
+  return [[true, `UI specs: ${st.expected} passed, 0 failed, 0 flaky`], binding];
 }
 
-/** UI evidence for one phase: the frozen UI specs that declare `// phase: M` with M ≤ N, run after HEAD was committed. */
-function uiPhaseGate(p, n, lock, git) {
-  const f = path.join(p.logs, 'ui-e2e.json');
-  if (!exists(f)) return [false, `phase ${n} is graded by the frozen UI specs: run them (ORACLE_UI_URL=<build url> PLAYWRIGHT_JSON_OUTPUT_FILE=specs/logs/ui-e2e.json npx playwright test --config specs/fixtures/ui/playwright.config.ts --reporter=json <phase ≤ ${n} spec files>)`];
+/** UI evidence for one phase: the frozen UI specs that declare `// phase: M` with M ≤ N, graded on the committed code. */
+function uiPhaseGates(p, n) {
+  const f = path.join(p.root, UI_E2E);
+  if (!exists(f)) return [[false, `phase ${n} is graded by the frozen UI specs: run them (ORACLE_UI_URL=<build url> node specs/.sdd/scripts/oracle.cjs ui <phase ≤ ${n} spec files>)`]];
   let rep;
-  try { rep = L.readJson(f); } catch (e) { return [false, e.message]; }
-  const mtime = fs.statSync(f).mtime.toISOString();
-  if (!lock || !(mtime > lock.frozenAt)) return [false, 'specs/logs/ui-e2e.json predates the current lock; re-run the UI specs'];
-  if (git && git.time && !(mtime > git.time)) return [false, `specs/logs/ui-e2e.json predates commit ${git.head.slice(0, 7)}: grade the committed phase`];
+  try { rep = L.readJson(f); } catch (e) { return [[false, e.message]]; }
+  return [uiPhaseGate(p, n, rep), E.gate(E.checkUi(p.root, UI_E2E))];
+}
+
+function uiPhaseGate(p, n, rep) {
   const declared = uiSpecFiles(p).map(x => ({ x, m: fs.readFileSync(x, 'utf8').match(/\/\/\s*phase:\s*(\d+)/) })).filter(y => y.m);
   const required = declared.filter(y => Number(y.m[1]) <= n).map(y => path.basename(y.x));
   const ran = new Set((rep.suites || []).map(s => path.basename(String(s.file || ''))));
@@ -939,18 +943,24 @@ function tokenAuditGate(p, stage, freshAfter) {
   const missing = [];
   const unmeasured = [];
   const mismatch = [];
+  const uncomparable = [];
   for (const w of want) {
     const k = `${w.component}|${w.state}|${w.property}`;
     const g = got.get(k.toLowerCase());
     if (!g) missing.push(k);
     else if (!g.measured) unmeasured.push(k);
     else if (g.match !== '✅') mismatch.push(`${k}${g.match === '❌' ? '' : ` (Match "${g.match || ''}")`}`);
-    else if (L.cssValuesMatch(w.expected, g.measured) === false) mismatch.push(`${k} (marked ✅, but measured ${g.measured} ≠ ${w.expected})`);
+    else {
+      const m = L.cssValuesMatch(w.expected, g.measured);
+      if (m === false) mismatch.push(`${k} (marked ✅, but measured ${g.measured} ≠ ${w.expected})`);
+      else if (m === null) uncomparable.push(`${k} (${w.expected} vs ${g.measured})`);
+    }
   }
   const list = a => `${a.slice(0, 6).join(', ')}${a.length > 6 ? ', …' : ''}`;
   if (missing.length) return [false, `${f}: ${missing.length} of ${want.length} DESIGN token row(s) missing: ${list(missing)}`];
   if (unmeasured.length) return [false, `${f}: ${unmeasured.length} row(s) without a measured value: ${list(unmeasured)}`];
   if (mismatch.length) return [false, `${f}: ${mismatch.length} row(s) not ✅: ${list(mismatch)}`];
+  if (uncomparable.length) return [false, `CSS_UNCOMPARABLE: ${f}: ${uncomparable.length} row(s) whose measured value cannot be compared with the token: ${list(uncomparable)} — write the measured value as the browser computes it, and the token in measurable units (px, hex)`];
   return [true, `${f}: all ${want.length} DESIGN token row(s) measured and matching`];
 }
 
@@ -969,22 +979,23 @@ const UI_REPEAT_TAG = /@(keyboard|focus)\b/;
 const UI_REPEAT_MIN = 20;
 
 /** Keyboard and focus specs race the browser's frame timing: one clean pass is not evidence for them. */
-function uiRepeatGate(p, lock, freshAfter) {
+const UI_REPEAT = 'specs/logs/ui-repeat.json';
+
+/** Keyboard and focus specs race the browser's frame timing: one clean pass is not evidence for them. [] when none are tagged. */
+function uiRepeatGates(p) {
   const tagged = uiSpecFiles(p).filter(f => UI_REPEAT_TAG.test(fs.readFileSync(f, 'utf8')));
-  if (!tagged.length) return null;
-  const f = path.join(p.logs, 'ui-repeat.json');
-  const cmd = `ORACLE_UI_URL=<build url> PLAYWRIGHT_JSON_OUTPUT_FILE=specs/logs/ui-repeat.json npx playwright test --config specs/fixtures/ui/playwright.config.ts --grep "@keyboard|@focus" --repeat-each=${UI_REPEAT_MIN} --reporter=json`;
-  if (!exists(f)) return [false, `${tagged.length} UI spec file(s) tag @keyboard/@focus: repeat them (${cmd})`];
+  if (!tagged.length) return [];
+  const f = path.join(p.root, UI_REPEAT);
+  const cmd = `ORACLE_UI_URL=<build url> node specs/.sdd/scripts/oracle.cjs ui --out ${UI_REPEAT} --grep "@keyboard|@focus" --repeat-each=${UI_REPEAT_MIN}`;
+  if (!exists(f)) return [[false, `${tagged.length} UI spec file(s) tag @keyboard/@focus: repeat them (${cmd})`]];
   let rep;
-  try { rep = L.readJson(f); } catch (e) { return [false, e.message]; }
-  const mtime = fs.statSync(f).mtime.toISOString();
-  if (!lock || !(mtime > lock.frozenAt)) return [false, 'specs/logs/ui-repeat.json predates the current lock; re-run the repeat'];
-  if (freshAfter && !(mtime > freshAfter)) return [false, 'specs/logs/ui-repeat.json predates this stage; re-run the repeat'];
+  try { rep = L.readJson(f); } catch (e) { return [[false, e.message]]; }
+  const binding = E.gate(E.checkUi(p.root, UI_REPEAT));
   const repeat = Math.max(0, ...((rep.config && rep.config.projects) || []).map(x => Number(x.repeatEach) || 0));
   const st = rep.stats || {};
-  if (repeat < UI_REPEAT_MIN) return [false, `specs/logs/ui-repeat.json ran --repeat-each=${repeat || 1}; @keyboard/@focus specs need at least ${UI_REPEAT_MIN}`];
-  if (!(st.expected > 0) || st.unexpected || st.flaky) return [false, `@keyboard/@focus specs ×${repeat}: ${st.expected || 0} passed, ${st.unexpected || 0} failed, ${st.flaky || 0} flaky`];
-  return [true, `@keyboard/@focus specs ×${repeat}: ${st.expected} passed, 0 failed, 0 flaky`];
+  if (repeat < UI_REPEAT_MIN) return [[false, `${UI_REPEAT} ran --repeat-each=${repeat || 1}; @keyboard/@focus specs need at least ${UI_REPEAT_MIN}`], binding];
+  if (!(st.expected > 0) || st.unexpected || st.flaky) return [[false, `@keyboard/@focus specs ×${repeat}: ${st.expected || 0} passed, ${st.unexpected || 0} failed, ${st.flaky || 0} flaky`], binding];
+  return [[true, `@keyboard/@focus specs ×${repeat}: ${st.expected} passed, 0 failed, 0 flaky`], binding];
 }
 
 // ========== Spec Change Requests & phase gates ==========
@@ -1086,9 +1097,9 @@ function exitGates(stage, p, state, info, opts = {}) {
     case '05': {
       const [lg, v] = lockGate(p);
       add(lg);
-      if (nonBrowser) add(oracleRunGate(p, v.lock, null));
-      if (browser) add(uiGate(p, v.lock, null));
-      if (browser) { const rg = uiRepeatGate(p, v.lock, null); if (rg) add(rg); }
+      if (nonBrowser) oracleRunGates(p, v.lock).forEach(add);
+      if (browser) uiGates(p).forEach(add);
+      if (browser) uiRepeatGates(p).forEach(add);
       add(phasesGatedGate(p));
       add(openScrGate(p));
       add(reconGate(p, freshAfter));
@@ -1098,8 +1109,8 @@ function exitGates(stage, p, state, info, opts = {}) {
       const [lg, v] = lockGate(p);
       add([info.ui, info.ui ? 'UI project' : 'Stage 06 applies only to UI projects']);
       add(lg);
-      add(uiGate(p, v.lock, freshAfter));
-      { const rg = uiRepeatGate(p, v.lock, freshAfter); if (rg) add(rg); }
+      uiGates(p).forEach(add);
+      uiRepeatGates(p).forEach(add);
       if (exists(p.design)) add(tokenAuditGate(p, '06', freshAfter));
       add(fileGate(p, 'specs/vat-checklist.md', 'Stage 06 tracker', freshAfter));
       const vf = fileGate(p, 'specs/VAT_REPORT.md', 'Stage 06 report', freshAfter);
@@ -1109,8 +1120,8 @@ function exitGates(stage, p, state, info, opts = {}) {
     case '07': {
       const [lg, v] = lockGate(p);
       add(lg);
-      if (nonBrowser) add(oracleRunGate(p, v.lock, freshAfter));
-      if (browser) add(uiGate(p, v.lock, freshAfter));
+      if (nonBrowser) oracleRunGates(p, v.lock).forEach(add);
+      if (browser) uiGates(p).forEach(add);
       add(reconGate(p, null));
       const open = (readText(p.phases).match(/^\s*- \[ \]/gm) || []).length;
       add([exists(p.phases) && !open, exists(p.phases) ? (open ? `IMPLEMENTATION_PHASES.md has ${open} unchecked task(s)` : 'all implementation tasks checked') : 'missing specs/IMPLEMENTATION_PHASES.md']);
@@ -1427,15 +1438,9 @@ function cmdPhase(p, args) {
     else if (!covers) add([false, `latest oracle run does not grade phase ${n} cumulatively (it used ${JSON.stringify(f)}); run oracle.cjs run --phase ${n}`]);
     else if (rep.failed || rep.errored || !rep.total) add([false, `oracle --phase ${f.phase || 'all'}: ${rep.passed}/${rep.total} passed, ${rep.failed} failed, ${rep.errored} errored — the phase stays open`]);
     else add([true, `oracle --phase ${f.phase || 'all'}: ${rep.passed}/${rep.total} passed against lock v${v.lock.lockVersion}`]);
-    if (rep && git && git.head) {
-      const rg = rep.git;
-      if (!rg) add([false, 'the oracle run recorded no git state (re-run it with this template\'s oracle.cjs)']);
-      else if (rg.dirtyCount || (rg.dirty || []).length) add([false, `the graded tree had ${rg.dirtyCount || rg.dirty.length} uncommitted file(s) (${(rg.dirty || []).slice(0, 5).join(', ')}): commit phase ${n} alone, then grade that commit`]);
-      else if (rg.head !== git.head) add([false, `the oracle graded ${String(rg.head).slice(0, 7)}, but HEAD is now ${git.head.slice(0, 7)}: re-run the oracle on HEAD`]);
-      else add([true, `graded tree = commit ${git.head.slice(0, 7)} (clean)`]);
-    }
+    if (rep && !(git && !git.head)) add(E.gate(E.check(p.root, rep, { rerun: `node specs/.sdd/scripts/oracle.cjs run --phase ${n}` })));
   } else if (!uiPhase) add([false, `phase ${n} has no oracle cases at or below it (sdd.cjs check should have refused the freeze)`]);
-  if (uiPhase) add(uiPhaseGate(p, n, v.lock, git));
+  if (uiPhase) uiPhaseGates(p, n).forEach(add);
   if (git) {
     add([!git.dirty.length, git.dirty.length ? `working tree has ${git.dirty.length} uncommitted file(s) outside the Stage 05 working files (${git.dirty.slice(0, 5).join(', ')}): they are not phase ${n} as graded` : 'working tree clean outside the Stage 05 working files']);
   } else add([true, 'not a git repository: the one-phase-per-commit boundary is not checked']);

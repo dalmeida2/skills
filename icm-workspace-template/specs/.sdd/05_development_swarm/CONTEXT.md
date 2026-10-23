@@ -28,8 +28,8 @@ Builder vs. Critic loop during implementation. The builder's mandate is narrow: 
 A phase is **done** only when all of these hold, in this order:
 1. Its tasks are wired into the running system (entry point, router, UI shell), not just present as files.
 2. It is committed **alone**: the commit holds phase N and nothing from a later phase.
-3. `node specs/.sdd/scripts/oracle.cjs run --phase N` on that commit → 0 failed, 0 errored (cumulative: phases ≤ N). A suite-local green does not tick a cumulative box. A phase graded only by the frozen UI specs (no oracle cases of its own): run the UI spec files that declare `// phase: M` with M ≤ N, after the commit, → `specs/logs/ui-e2e.json` with 0 failed, 0 flaky.
-4. `node specs/.sdd/scripts/sdd.cjs phase --completed N` passes. It checks the lock, that the green run graded exactly the committed HEAD on a clean tree, that phases < N are gated, and that **no SCR is open**, then records `specs/logs/phases.jsonl`. Only then tick the boxes.
+3. `node specs/.sdd/scripts/oracle.cjs run --phase N` on that commit → 0 failed, 0 errored (cumulative: phases ≤ N). A suite-local green does not tick a cumulative box. A phase graded only by the frozen UI specs (no oracle cases of its own): after the commit, `ORACLE_UI_URL=<build url> node specs/.sdd/scripts/oracle.cjs ui <the spec files that declare // phase: M with M ≤ N>` → `specs/logs/ui-e2e.json` with 0 failed, 0 flaky.
+4. `node specs/.sdd/scripts/sdd.cjs phase --completed N` passes. It checks the lock, that the green run graded the code as it is now (no file outside `specs/` changed since, nothing uncommitted before or during the run: `EVIDENCE_*` codes), that phases < N are gated, and that **no SCR is open**, then records `specs/logs/phases.jsonl`. Only then tick the boxes.
 
 ⊥ write phase N+1 files while phase N is not done. A red phase or an open SCR → fix phase N, or stop and route the SCR to Stage 00; the tree ⊥ gain later phases on top of a red one. `transition --completed 05` refuses until every phase is gated and no SCR is open.
 
@@ -136,7 +136,7 @@ After ALL phases complete & verified, Architect ! execute full reconciliation:
 **⛔ GATE:** ⊥ proceed until reconciliation = ZERO ❌ drift entries.
 
 ### Handoff / Transitions
-1. **Final evidence:** `node specs/.sdd/scripts/oracle.cjs run` (unfiltered) → 100% green; UI projects also write `specs/logs/ui-e2e.json` (see `oracle-standard.md` §UI specs), and when any frozen UI spec is tagged `@keyboard`/`@focus`, a repeated run of those specs: `ORACLE_UI_URL=<build url> PLAYWRIGHT_JSON_OUTPUT_FILE=specs/logs/ui-repeat.json npx playwright test --config specs/fixtures/ui/playwright.config.ts --grep "@keyboard|@focus" --repeat-each=20 --reporter=json` — one clean pass is not evidence for focus timing.
+1. **Final evidence:** `node specs/.sdd/scripts/oracle.cjs run` (unfiltered) → 100% green; UI projects also write `specs/logs/ui-e2e.json` (see `oracle-standard.md` §UI specs), and when any frozen UI spec is tagged `@keyboard`/`@focus`, a repeated run of those specs: `ORACLE_UI_URL=<build url> node specs/.sdd/scripts/oracle.cjs ui --out specs/logs/ui-repeat.json --grep "@keyboard|@focus" --repeat-each=20` — one clean pass is not evidence for focus timing.
 2. **Update state:** `node specs/.sdd/scripts/sdd.cjs transition --completed 05 && git commit …` (refuses unless the lock is intact, the latest unfiltered oracle run against this lock is green, every phase passed its phase gate, no SCR is open, the keyboard/focus repeat is green (UI), and reconciliation has zero ❌). ⊥ pipe the transition into `tail`/`head` before `&&` (WORKSPACE_ROUTING §Gate Commands).
 3. **Handoff:** UI project → prompt `06_visual_acceptance_testing`. Otherwise → `07_verification_before_completion` (the transition skips 06 automatically).
 

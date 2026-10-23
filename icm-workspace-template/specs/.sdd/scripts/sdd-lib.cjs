@@ -8,7 +8,8 @@ const path = require('path');
 const crypto = require('crypto');
 const { parseYaml } = require('./yaml-lite.cjs');
 
-const TOOL_VERSION = '2026.10.01-v3';
+// The template release, suffix included: reports and stamps record which tools graded them.
+const TOOL_VERSION = '2026.10.01-v3+sky.3';
 
 // ========== Paths ==========
 
@@ -709,7 +710,8 @@ const WORKING_PATHS = ['specs/logs/', 'specs/changes/', 'specs/IMPLEMENTATION_PH
 
 function git(root, args) {
   try {
-    return require('child_process').execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    // Trim the end only: `status --porcelain` lines start with a status column that may be a space.
+    return require('child_process').execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trimEnd();
   } catch { return null; }
 }
 
@@ -764,9 +766,21 @@ function designTokenRows(design) {
   return rows;
 }
 
+// The CSS basic colour keywords. Any other keyword cannot be compared and is refused with a hint to use hex.
+const CSS_NAMED_COLORS = {
+  black: '000000', silver: 'c0c0c0', gray: '808080', grey: '808080', white: 'ffffff', maroon: '800000', red: 'ff0000',
+  purple: '800080', fuchsia: 'ff00ff', green: '008000', lime: '00ff00', olive: '808000', yellow: 'ffff00',
+  navy: '000080', blue: '0000ff', teal: '008080', aqua: '00ffff', orange: 'ffa500',
+};
+// Browsers report computed lengths in px; rem and em are converted at the default 16px root font size.
+const ROOT_FONT_PX = 16;
+
 /** Canonical form of a measured CSS value, so "rgb(255, 255, 255)" equals "#FFFFFF" and "2.0px" equals "2px". */
 function normalizeCssValue(v) {
   let s = String(v).trim().toLowerCase().replace(/["']/g, '').replace(/\s+/g, ' ');
+  if (CSS_NAMED_COLORS[s]) s = `#${CSS_NAMED_COLORS[s]}`;
+  const rem = s.match(/^(-?\d*\.?\d+)r?em$/);
+  if (rem) return { kind: 'px', v: String(Number(rem[1]) * ROOT_FONT_PX) };
   const hex = s.match(/^#([0-9a-f]{3,8})$/);
   if (hex) {
     let h = hex[1];
@@ -787,7 +801,7 @@ function normalizeCssValue(v) {
   return { kind: 'text', v: s.replace(/\s*,\s*/g, ',') };
 }
 
-/** false when both values are comparable and differ; null when they cannot be compared (units differ). */
+/** false when both values are comparable and differ; null when they cannot be compared (units differ): the gate refuses those (CSS_UNCOMPARABLE). */
 function cssValuesMatch(expected, measured) {
   const a = normalizeCssValue(expected);
   const b = normalizeCssValue(measured);
