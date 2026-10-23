@@ -1,5 +1,5 @@
 <!-- sdd-icm-template -->
-<!-- version: 2026.10.01-v3+sky.2 -->
+<!-- version: 2026.10.01-v3+sky.3 -->
 <!-- source: github.com/dalmeida2/skills@skymantics-cli/v3 (base: github.com/Wilberto-lopez-skymantics/skills@v3) -->
 
 # Spec-Driven Development (SDD v3) Workspace

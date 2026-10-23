@@ -49,8 +49,8 @@ Every row of `specs/logs/06-token-audit.md` (from `sdd.cjs token-audit --stage 0
 ```markdown
 | Run | Command | Result |
 |-----|---------|--------|
-| Full suite | `… --reporter=json` → specs/logs/ui-e2e.json | 252 passed, 0 failed, 0 flaky |
-| Keyboard / focus ×20 | `… --grep "@keyboard|@focus" --repeat-each=20` → specs/logs/ui-repeat.json | 600 passed, 0 failed, 0 flaky |
+| Full suite | `oracle.cjs ui` → specs/logs/ui-e2e.json | 252 passed, 0 failed, 0 flaky |
+| Keyboard / focus ×20 | `oracle.cjs ui --out specs/logs/ui-repeat.json --grep "@keyboard|@focus" --repeat-each=20` → specs/logs/ui-repeat.json | 600 passed, 0 failed, 0 flaky |
 ```
 
 A walker stopped by a shared limit (HTTP 429 on sign-in) is **BLOCKED** and re-run with its own accounts or a reset window; it is not a FAIL. A control the spec says is absent for that role or state is a PASS when absent.
