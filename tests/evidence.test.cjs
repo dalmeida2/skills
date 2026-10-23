@@ -334,3 +334,59 @@ test('13: a stamp naming a tree object this repository does not have is EVIDENCE
   assert.equal(c.code, 'EVIDENCE_UNCHECKABLE');
   assert.equal(c.ok, false);
 });
+
+// ---------- Amendment A1 (approved on #28, 2026-10-23): cases the Red Team found uncovered ----------
+
+test('3b: an uncommitted edit to a tracked source file after grading is EVIDENCE_TREE_CHANGED', () => {
+  const dir = frozenRepo();
+  stampedRun(dir);
+  commitAll(dir, 'oracle report');
+  write(dir, 'src/app.js', '// edited, not committed\n');
+  const c = checkRun(dir);
+  assert.equal(c.code, 'EVIDENCE_TREE_CHANGED');
+  assert.match(c.message, /src\/app\.js/);
+});
+
+test('14: a stage report written and committed after the run keeps the evidence valid', () => {
+  const dir = uiRepo();
+  stampedUi(dir, 'specs/logs/ui-e2e.json', { suites: [{ file: 'shell.spec.ts' }], ...UI_STATS });
+  write(dir, 'specs/VAT_REPORT.md', '**Verdict:** PASS\n');
+  write(dir, 'specs/vat-checklist.md', '- [x] shell\n');
+  commitAll(dir, 'Stage 06 reports');
+  const c = E(dir).checkUi(dir, 'specs/logs/ui-e2e.json');
+  assert.equal(c.ok, true, c.message);
+  assert.equal(c.code, null);
+});
+
+test('15: oracle.cjs ui keeps Playwright output out of the frozen set unless --output is given', { skip: process.platform === 'win32' && 'needs a POSIX fake npx' }, () => {
+  const dir = uiRepo();
+  write(dir, 'specs/fixtures/ui/playwright.config.ts', 'export default {};\n');
+  commitAll(dir, 'ui config');
+  // A stand-in for Playwright: writes .last-run.json where Playwright would, and the JSON report.
+  write(dir, '.fake-bin/npx', [
+    '#!/bin/sh',
+    'out=specs/fixtures/ui/test-results',
+    'for a in "$@"; do case $a in --output=*) out=${a#--output=};; esac; done',
+    'mkdir -p "$out" && echo "{}" > "$out/.last-run.json"',
+    `printf '%s' '${JSON.stringify({ suites: [{ file: 'shell.spec.ts' }], ...UI_STATS })}' > "$PLAYWRIGHT_JSON_OUTPUT_FILE"`,
+  ].join('\n'));
+  fs.chmodSync(path.join(dir, '.fake-bin/npx'), 0o755);
+  write(dir, '.gitignore', '.fake-bin/\n');
+  commitAll(dir, 'ignore the stand-in');
+  const r = spawnSync(process.execPath, [path.join(dir, 'specs/.sdd/scripts/oracle.cjs'), 'ui'], { cwd: dir, encoding: 'utf8', env: { ...process.env, PATH: `${path.join(dir, '.fake-bin')}${path.delimiter}${process.env.PATH}`, ORACLE_UI_URL: '' } });
+  assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+  assert.ok(fs.existsSync(path.join(dir, 'specs/logs/ui-artifacts/.last-run.json')));
+  assert.ok(!fs.existsSync(path.join(dir, 'specs/fixtures/ui/test-results')));
+  assert.ok(!L(dir).frozenFiles(dir).some(f => f.includes('last-run')), 'nothing Playwright wrote is in the frozen set');
+  const c = E(dir).checkUi(dir, 'specs/logs/ui-e2e.json');
+  assert.equal(c.ok, true, c.message);
+});
+
+test('16: a malformed stamp is EVIDENCE_NO_STAMP; a lock deleted after grading is EVIDENCE_LOCK_CHANGED', () => {
+  const dir = frozenRepo();
+  assert.equal(E(dir).check(dir, { evidence: {} }).code, 'EVIDENCE_NO_STAMP');
+  assert.equal(E(dir).check(dir, { evidence: { materials: [] } }).code, 'EVIDENCE_NO_STAMP');
+  stampedRun(dir);
+  fs.rmSync(path.join(dir, 'specs/spec.lock.json'));
+  assert.equal(checkRun(dir).code, 'EVIDENCE_LOCK_CHANGED');
+});
