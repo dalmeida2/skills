@@ -29,7 +29,7 @@ A phase is **done** only when all of these hold, in this order:
 1. Its tasks are wired into the running system (entry point, router, UI shell), not just present as files.
 2. It is committed **alone**: the commit holds phase N and nothing from a later phase.
 3. `node specs/.sdd/scripts/oracle.cjs run --phase N` on that commit → 0 failed, 0 errored (cumulative: phases ≤ N). A suite-local green does not tick a cumulative box. A phase graded only by the frozen UI specs (no oracle cases of its own): after the commit, `ORACLE_UI_URL=<build url> node specs/.sdd/scripts/oracle.cjs ui <the spec files that declare // phase: M with M ≤ N>` → `specs/logs/ui-e2e.json` with 0 failed, 0 flaky.
-4. `node specs/.sdd/scripts/sdd.cjs phase --completed N` passes. It checks the lock, that the green run graded the code as it is now (same files outside the Stage 05 working files, nothing uncommitted before or during the run: `EVIDENCE_*` codes), that phases < N are gated, and that **no SCR is open**, then records `specs/logs/phases.jsonl`. Only then tick the boxes.
+4. `node specs/.sdd/scripts/sdd.cjs phase --completed N` passes. It checks the lock, that the green run graded the code as it is now (no file outside `specs/` changed since, nothing uncommitted before or during the run: `EVIDENCE_*` codes), that phases < N are gated, and that **no SCR is open**, then records `specs/logs/phases.jsonl`. Only then tick the boxes.
 
 ⊥ write phase N+1 files while phase N is not done. A red phase or an open SCR → fix phase N, or stop and route the SCR to Stage 00; the tree ⊥ gain later phases on top of a red one. `transition --completed 05` refuses until every phase is gated and no SCR is open.
 

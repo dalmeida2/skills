@@ -1008,12 +1008,27 @@ async function cmdRecord(p, args) {
 // ========== ui ==========
 
 const UI_CONFIG = 'specs/fixtures/ui/playwright.config.ts';
+// Playwright's own output (traces, screenshots, .last-run.json) defaults to a folder beside the config, inside the
+// frozen set, where it would break the lock (#29). It goes to a working path instead, unless the caller sets --output.
+const UI_ARTIFACTS = 'specs/logs/ui-artifacts';
+
+/**
+ * How to start Playwright: its CLI through this Node when the project has it installed (no shell, so arguments such as
+ * --grep "@keyboard|@focus" pass unchanged on every platform), otherwise npx where that needs no shell.
+ */
+function playwrightCommand(root) {
+  for (const id of ['@playwright/test/cli', 'playwright/cli']) {
+    try { return [process.execPath, [require.resolve(id, { paths: [root] })]]; } catch { /* not installed here */ }
+  }
+  if (process.platform === 'win32') return null;
+  return ['npx', ['playwright']];
+}
 
 /**
  * Run the frozen Playwright suite and stamp its report beside it (evidence.cjs), so the UI gates can tell which
  * code it graded. Arguments other than --out and --root go to Playwright unchanged (spec files, --grep, --repeat-each).
  */
-function cmdUi(p) {
+async function cmdUi(p) {
   const raw = process.argv.slice(2);
   raw.splice(raw.indexOf('ui'), 1);
   const pass = [];
@@ -1032,9 +1047,13 @@ function cmdUi(p) {
   fs.mkdirSync(path.dirname(outAbs), { recursive: true });
   // A run that dies must not leave an older report or stamp behind to be read as this run's.
   for (const f of [outAbs, path.join(p.root, E.stampPath(out))]) fs.rmSync(f, { force: true });
-  const start = E.stamp(p.root);
-  const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-  const r = spawnSync(npx, ['playwright', 'test', '--config', UI_CONFIG, '--reporter=line,json', ...pass], { cwd: p.root, stdio: 'inherit', env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_FILE: out } });
+  const pw = playwrightCommand(p.root);
+  if (!pw) fail('Playwright is not installed in this project (npm i -D @playwright/test); on Windows oracle.cjs ui runs only the project\'s own copy');
+  if (!pass.some(a => a === '--output' || a.startsWith('--output='))) pass.push(`--output=${UI_ARTIFACTS}`);
+  // The UI suite's base URL (ORACLE_UI_URL) is the app being graded: ask it which build it is (HTTP-6 X-SDD-Build).
+  const uiUrl = process.env.ORACLE_UI_URL;
+  const start = E.stamp(p.root, { build: uiUrl ? await buildId({}, { baseUrl: uiUrl.replace(/\/+$/, '') }) : null });
+  const r = spawnSync(pw[0], [...pw[1], 'test', '--config', UI_CONFIG, '--reporter=line,json', ...pass], { cwd: p.root, stdio: 'inherit', env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_FILE: out } });
   if (r.error) fail(`could not start Playwright (${r.error.message})`);
   if (!fs.existsSync(outAbs)) fail(`Playwright wrote no ${out} (exit ${r.status}); nothing to stamp`);
   E.writeUiStamp(p.root, out, E.seal(p.root, start));

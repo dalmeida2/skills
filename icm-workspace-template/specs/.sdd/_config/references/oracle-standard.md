@@ -199,22 +199,22 @@ Black-box `@playwright/test` specs in `specs/fixtures/ui/`, written in Stage 04 
 
 ## Evidence binding (`evidence.cjs`)
 
-Every `oracle.cjs run` report, and every report `oracle.cjs ui` writes, carries a stamp: the commit and tree it graded, the files that were uncommitted when the run started or changed before it ended, the lock hash, the tool version, and the build the app declared (HTTP-6 `X-SDD-Build`, optional). The gates accept a report only while its stamp still matches. The first code that applies is reported:
+Every `oracle.cjs run` report, and every report `oracle.cjs ui` writes, carries a stamp: the commit and tree it graded, the code files that were uncommitted when the run started or changed before it ended, the lock hash, the tool version, and the build the app declared (HTTP-6 `X-SDD-Build`, optional). **The graded code is every file outside `specs/`.** Nothing under `specs/` is application code: its frozen part is bound by the lock hash, and the rest (logs, SCRs, stage reports such as `VAT_REPORT.md`) is written about a run, often after it, so writing or committing it never makes evidence stale. The gates accept a report only while its stamp still matches. The first code that applies is reported:
 
 | Code | Meaning | Fix |
 |---|---|---|
 | `EVIDENCE_NO_STAMP` | The report predates template +sky.2, or was graded outside git in what is now a repository. | Re-run it. |
 | `EVIDENCE_UNBOUND` | Not a git repository. A note, not a refusal: nothing binds evidence to code here. | — |
 | `EVIDENCE_UNCHECKABLE` | git cannot find the graded commit or tree (another clone, pruned history). | Re-run it. |
-| `EVIDENCE_GRADED_DIRTY` | The run graded uncommitted files, ran before the first commit, or code changed during the run. | Commit, then re-run. |
-| `EVIDENCE_LOCK_CHANGED` | The frozen set was re-frozen after the run. | Re-run on the new lock. |
-| `EVIDENCE_TREE_CHANGED` | Files outside the Stage 05 working files changed since the run (tracked or untracked). | Re-run on the current code. |
+| `EVIDENCE_GRADED_DIRTY` | The run graded uncommitted code, ran before the first commit, or code changed during the run. | Commit, then re-run. |
+| `EVIDENCE_LOCK_CHANGED` | The frozen set was re-frozen (or the lock removed) after the run. | Re-run on the new lock. |
+| `EVIDENCE_TREE_CHANGED` | Code changed since the run: a file outside `specs/` committed, edited or added (tracked or untracked). | Re-run on the current code. |
 | `EVIDENCE_BUILD_UNCOMPARABLE` | The app declared a build that is not a commit or tree id. | Declare the commit. |
 | `EVIDENCE_BUILD_MISMATCH` | The app that answered was built from other code. | Rebuild, restart, re-run. |
 | `UI_NO_STAMP` | A UI report with no stamp beside it: Playwright was run directly, or the report came from another tree. | Run it through `oracle.cjs ui`. |
 | `UI_REPORT_REPLACED` | The UI report changed after it was stamped. | Run it through `oracle.cjs ui`. |
 
-Committing the report, or rebasing and amending without changing code, keeps evidence valid: the tree is compared, not the commit id.
+Committing the report, or rebasing and amending without changing code, keeps evidence valid: the tree is compared, not the commit id. `oracle.cjs ui` sends Playwright's own output (traces, screenshots, `.last-run.json`) to `specs/logs/ui-artifacts/` unless `--output` is given: beside the config it would land in the frozen set and break the lock.
 
 **What this does not do.**
 - It catches honest mistakes: stale, cross-branch and merged evidence, and a stale build still answering on the port.

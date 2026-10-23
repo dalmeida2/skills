@@ -224,9 +224,9 @@ v3 challenges several v2 decisions that worked against the equivalence goal:
 
 Evidence is bound to the code it graded (`oracle-standard.md` §Evidence binding). The tools are in the frozen set, so this is a re-freeze with the user's approval (`--reason "pipeline: 2026.10.01-v3+sky.3"`). What changes for a running project:
 
-- **UI reports.** Run the frozen UI specs through `ORACLE_UI_URL=<build url> node specs/.sdd/scripts/oracle.cjs ui`, which stamps the report. A `ui-e2e.json` or `ui-repeat.json` written by Playwright directly is refused (`UI_NO_STAMP`): re-run each once after upgrading.
+- **UI reports.** Run the frozen UI specs through `ORACLE_UI_URL=<build url> node specs/.sdd/scripts/oracle.cjs ui`, which stamps the report and keeps Playwright's output out of the frozen set (`specs/logs/ui-artifacts/`). A `ui-e2e.json` or `ui-repeat.json` written by Playwright directly is refused (`UI_NO_STAMP`): re-run each once after upgrading.
 - **Oracle runs.** A `+sky.2` run report stays valid while the code is unchanged (its tree is derived from the commit it recorded). A report from before `+sky.2` is refused (`EVIDENCE_NO_STAMP`): re-run it.
-- **Freshness.** Evidence no longer has to be newer than the stage start or the lock date. It has to match the current code and lock, so committing a report, or rebasing without code changes, keeps it valid; any code change outside the Stage 05 working files makes it stale.
+- **Freshness.** Evidence no longer has to be newer than the stage start or the lock date. It has to match the current code and lock, so committing a report, writing a stage report after the run, or rebasing without code changes keeps it valid; any change to a file outside `specs/` makes it stale.
 - **Build identity (optional).** An app may send `X-SDD-Build: <commit>` from `GET /healthz` (HTTP-6). The oracle then refuses evidence graded against a build from other code.
 - **Token audits.** A measured value that cannot be compared with its token (e.g. `var(--x)` against `#FFFFFF`) is refused as `CSS_UNCOMPARABLE` instead of passing; `rem`/`em` (at 16px) and basic colour names are converted.
 

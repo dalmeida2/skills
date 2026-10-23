@@ -7,6 +7,10 @@
  * check(root, report)    ok, or exactly one problem code, evaluated in a fixed order
  * writeUiStamp / checkUi the same for Playwright reports, which Playwright writes and the oracle stamps beside them
  *
+ * What counts as the graded code: every file outside specs/. Nothing under specs/ is application code; its frozen
+ * part is bound by the lock hash, and the rest (logs, SCRs, stage reports such as VAT_REPORT.md) is written about
+ * the run, often after it, and must not make the run stale.
+ *
  * Scope: honest mistakes (stale, cross-branch or merged evidence; an old build still answering). The report is
  * still written on the builder's machine, so a stamp proves nothing against a forged report: every stamp says
  * enforcement "local", and a CI runner becomes the point of record at T2+ (#35).
@@ -26,13 +30,14 @@ const NOT_SEEN = 'ignored files (e.g. dist/, .env) are not seen by git';
 
 /** git with its exit status kept: 0 and 1 are answers, anything else means git could not answer. */
 function git(root, args) {
-  const r = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
-  if (r.error) return { status: -1, out: '', err: r.error.message };
-  return { status: r.status, out: (r.stdout || '').trim(), err: (r.stderr || '').trim() };
+  const r = spawnSync('git', ['-c', 'core.quotePath=false', ...args], { cwd: root, encoding: 'utf8' });
+  if (r.error) return { status: -1, out: '', raw: '', err: r.error.message };
+  return { status: r.status, out: (r.stdout || '').trim(), raw: r.stdout || '', err: (r.stderr || '').trim() };
 }
 
-const lines = s => s.split('\n').filter(Boolean);
-const excludes = () => L.WORKING_PATHS.map(w => `:(exclude)${w}`);
+const NOT_CODE = ['specs/'];
+const names = raw => raw.split('\0').filter(Boolean);
+const excludes = () => NOT_CODE.map(w => `:(exclude)${w}`);
 const inRepo = root => git(root, ['rev-parse', '--is-inside-work-tree']).out === 'true';
 const list = a => `${a.slice(0, 5).join(', ')}${a.length > 5 ? `, … (${a.length})` : ''}`;
 const sha256 = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -50,13 +55,13 @@ function remoteUri(root) {
   return url ? `git+${url.replace(/\/\/[^@/]+@/, '//')}` : 'git+local';
 }
 
-/** Tracked files that differ from `tree`, plus untracked files, outside WORKING_PATHS, relative to the project root. */
+/** Code files (outside specs/) that differ from `tree` in the working copy, tracked or untracked, relative to the project root. */
 function changedSince(root, tree) {
-  const d = git(root, ['diff', '--name-only', '--relative', '--no-renames', tree, '--', '.', ...excludes()]);
+  const d = git(root, ['diff', '--name-only', '-z', '--relative', '--no-renames', tree, '--', '.', ...excludes()]);
   if (d.status !== 0) return { error: d.err || `git diff exited ${d.status}` };
-  const u = git(root, ['ls-files', '--others', '--exclude-standard', '--', '.', ...excludes()]);
+  const u = git(root, ['ls-files', '-z', '--others', '--exclude-standard', '--', '.', ...excludes()]);
   if (u.status !== 0) return { error: u.err || `git ls-files exited ${u.status}` };
-  return { paths: [...new Set([...lines(d.out), ...lines(u.out)])].sort() };
+  return { paths: [...new Set([...names(d.raw), ...names(u.raw)])].sort() };
 }
 
 function stamp(root, { build } = {}) {
@@ -74,11 +79,11 @@ function stamp(root, { build } = {}) {
   const head = git(root, ['rev-parse', '--verify', '-q', 'HEAD']);
   const commit = head.status === 0 ? head.out : null;
   const tree = commit ? git(root, ['rev-parse', `${commit}^{tree}`]).out : null;
-  const state = L.gitState(root);
+  const dirty = tree ? changedSince(root, tree) : null;
   return {
     ...base,
     materials: [{ uri: remoteUri(root), digest: commit ? { gitCommit: commit, gitTree: tree } : {} }, lockMaterial],
-    dirty: state ? state.dirty : [],
+    dirty: dirty && dirty.paths ? dirty.paths : [],
   };
 }
 
@@ -96,7 +101,11 @@ function seal(root, start) {
 
 /** The stamp a report carries; sky.2 reports carry only `git: {head, dirty}`, from which the tree is derived. */
 function stampOf(report) {
-  if (report.evidence) return report.evidence;
+  if (report.evidence) {
+    const e = report.evidence;
+    const wellFormed = Array.isArray(e.materials) && e.materials[0] && typeof e.materials[0].digest === 'object' && e.materials[0].digest;
+    return wellFormed ? e : { malformed: true };
+  }
   if (!('git' in report)) return null;
   const lockMaterial = { name: LOCK_FILE, digest: report.lockHash ? { sha256: report.lockHash } : {} };
   if (!report.git) return { unbound: true, materials: [{ digest: {} }, lockMaterial], dirty: [], legacy: true };
@@ -121,6 +130,7 @@ const no = (code, message) => ({ ok: false, code, message });
 function check(root, report, { rerun = 'node specs/.sdd/scripts/oracle.cjs run' } = {}) {
   const s = stampOf(report);
   if (!s) return no('EVIDENCE_NO_STAMP', `the report carries no evidence stamp (made before template +sky.2): re-run ${rerun}`);
+  if (s.malformed) return no('EVIDENCE_NO_STAMP', `the report's evidence stamp is malformed: re-run ${rerun}`);
   if (!inRepo(root)) return note('EVIDENCE_UNBOUND', 'not a git repository: this evidence is not bound to the code it graded');
   if (s.unbound) return no('EVIDENCE_NO_STAMP', `the run was graded outside git, and this is a repository now: re-run ${rerun}`);
   const g = s.materials[0].digest;
@@ -133,12 +143,12 @@ function check(root, report, { rerun = 'node specs/.sdd/scripts/oracle.cjs run' 
   }
   const has = git(root, ['cat-file', '-e', `${tree}^{tree}`]);
   if (has.status !== 0) return no('EVIDENCE_UNCHECKABLE', `the graded tree ${tree.slice(0, 12)} is not in this repository (${has.err || 'missing object'}): re-run ${rerun}`);
-  if (s.dirty && s.dirty.length) return no('EVIDENCE_GRADED_DIRTY', `the graded tree had ${s.dirty.length} uncommitted file(s) (${list(s.dirty)}), or they changed during the run: commit them, then re-run ${rerun}`);
-  const want = s.materials[1] && s.materials[1].digest.sha256;
-  const lockNow = currentLockHash(root);
-  if (lockNow && want !== lockNow) return no('EVIDENCE_LOCK_CHANGED', `graded against lock ${want ? want.slice(0, 12) : '(none)'}, but the lock is now ${lockNow.slice(0, 12)}: re-run ${rerun}`);
   const ch = changedSince(root, tree);
   if (ch.error) return no('EVIDENCE_UNCHECKABLE', `git could not compare the code with the graded tree (${ch.error})`);
+  if (s.dirty && s.dirty.length) return no('EVIDENCE_GRADED_DIRTY', `the graded tree had ${s.dirty.length} uncommitted file(s) (${list(s.dirty)}), or they changed during the run: commit them, then re-run ${rerun}`);
+  const want = (s.materials[1] && s.materials[1].digest && s.materials[1].digest.sha256) || null;
+  const lockNow = currentLockHash(root);
+  if (want !== lockNow) return no('EVIDENCE_LOCK_CHANGED', `graded against lock ${want ? want.slice(0, 12) : '(none)'}, but the lock is now ${lockNow ? lockNow.slice(0, 12) : '(none)'}: re-run ${rerun}`);
   if (ch.paths.length) return no('EVIDENCE_TREE_CHANGED', `the code changed since it was graded at ${g.gitCommit.slice(0, 7)} (${list(ch.paths)}): re-run ${rerun}`);
   let buildNote = 'build identity not verified (the app declares no build id)';
   if (s.build) {
@@ -183,4 +193,4 @@ function gate(result) {
   return [result.ok, result.code ? `${result.code}: ${result.message}` : result.message];
 }
 
-module.exports = { STAMP_TYPE, stamp, seal, check, stampPath, writeUiStamp, checkUi, gate, changedSince };
+module.exports = { STAMP_TYPE, NOT_CODE, stamp, seal, check, stampPath, writeUiStamp, checkUi, gate, changedSince };
