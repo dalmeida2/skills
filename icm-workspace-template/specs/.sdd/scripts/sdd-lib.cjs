@@ -451,6 +451,17 @@ function interpolateEnv(value, env) {
   return value;
 }
 
+/** Every `${NAME:-fallback}` in `value` that interpolateEnv would fill from its fallback (NAME unset or empty). */
+function defaultedVars(value, env, out = []) {
+  if (typeof value === 'string') {
+    for (const m of value.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]*)\}/g)) {
+      if (env[m[1]] === undefined || env[m[1]] === '') out.push({ name: m[1], fallback: m[2] });
+    }
+  } else if (Array.isArray(value)) value.forEach(v => defaultedVars(v, env, out));
+  else if (isPlainObject(value)) Object.values(value).forEach(v => defaultedVars(v, env, out));
+  return out;
+}
+
 function getPath(obj, expr) {
   const tokens = [];
   expr.replace(/\[(\d+)\]|([^.[\]]+)/g, (_, idx, key) => { tokens.push(idx !== undefined ? Number(idx) : key); return ''; });
@@ -858,6 +869,7 @@ module.exports = {
   renderExpect,
   templateVars,
   interpolateEnv,
+  defaultedVars,
   getPath,
   listFiles,
   frozenFiles,

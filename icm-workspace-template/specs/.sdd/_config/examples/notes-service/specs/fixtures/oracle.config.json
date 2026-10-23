@@ -2,9 +2,9 @@
   "$schema": "../../../../schemas/oracle-config.schema.json",
   "targets": {
     "default": {
-      "baseUrl": "${ORACLE_DEFAULT_URL:-http://127.0.0.1:3000}",
+      "baseUrl": "${ORACLE_DEFAULT_URL}",
       "env": {
-        "DATABASE_URL": "${ORACLE_DEFAULT_DATABASE_URL:-postgres://localhost:5432/notes_oracle}"
+        "DATABASE_URL": "${ORACLE_DEFAULT_DATABASE_URL}"
       }
     },
     "a": {

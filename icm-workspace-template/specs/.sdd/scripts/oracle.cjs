@@ -133,6 +133,26 @@ function resolveTarget(cfg, name) {
   return { name, env, baseUrl };
 }
 
+/**
+ * Setup hooks change state (e.g. TRUNCATE): they run only against a target whose every value was set explicitly.
+ * A `${VAR:-default}` fallback is a guess about which build and database are under test, so a run that would
+ * execute hooks with one refuses before any request (#49, M-046). Runs without hooks only read, and may use defaults.
+ */
+function refuseImplicitTarget(cfg, target, cases) {
+  const hooks = [...new Set(cases.flatMap(c => c.setup || cfg.defaultSetup || []))];
+  if (!hooks.length) return;
+  const t = cfg.targets[target.name] || {};
+  const found = [...L.defaultedVars(t.baseUrl, process.env), ...L.defaultedVars(t.env || {}, process.env)];
+  for (const h of hooks) {
+    const d = (cfg.hooks || {})[h];
+    if (d) L.defaultedVars([d.cmd, d.args || [], d.env || {}], target.env, found);
+  }
+  if (!found.length) return;
+  const vars = [...new Map(found.map(f => [f.name, f])).values()]
+    .map(f => `${f.name} (default ${f.fallback.replace(/\/\/[^@/]+@/, '//***@')})`);
+  fail(`ORACLE_TARGET_IMPLICIT: target "${target.name}" would run setup hook(s) ${hooks.join(', ')} using defaults for ${vars.join(', ')}: export them for the build under test, then re-run`);
+}
+
 function lockInfo(p) {
   const v = L.verifyLock(p.root);
   if (!v.exists) return { lockHash: null, lockValid: false, lockVersion: null };
@@ -396,6 +416,7 @@ async function cmdRun(p, args) {
   const { selected, filtered } = selectCases(cases, args.flags, { includeProbes: false });
   if (!selected.length) fail('no cases selected');
   const target = resolveTarget(cfg, typeof args.flags.target === 'string' ? args.flags.target : 'default');
+  refuseImplicitTarget(cfg, target, selected);
   const lock = lockInfo(p);
   if (!lock.lockHash) console.log('⚠ no spec.lock.json yet: results cannot serve as stage evidence until the frozen set is locked');
   else if (!lock.lockValid) console.log('⚠ frozen set modified since the last freeze: results will not count as evidence (sdd.cjs verify)');
@@ -569,6 +590,8 @@ async function cmdDiff(p, args) {
   if (!selected.length) fail('no cases selected');
   const A = resolveTarget(cfg, typeof args.flags.a === 'string' ? args.flags.a : 'a');
   const B = resolveTarget(cfg, typeof args.flags.b === 'string' ? args.flags.b : 'b');
+  refuseImplicitTarget(cfg, A, selected);
+  refuseImplicitTarget(cfg, B, selected);
   if (A.baseUrl === B.baseUrl && JSON.stringify(A.env) === JSON.stringify(B.env)) fail(`targets "${A.name}" and "${B.name}" resolve to the same build (${A.baseUrl}); point them at two independent builds`);
   const observedHeaders = [...new Set([...CONTRACT_HEADERS, ...(cfg.observedHeaders || [])])];
   const lock = lockInfo(p);
@@ -984,6 +1007,7 @@ async function cmdRecord(p, args) {
   const { cfg, cases } = loadProject(p, typeof args.flags['cases-dir'] === 'string' ? args.flags['cases-dir'] : null);
   const { selected } = selectCases(cases, args.flags, { includeProbes: true });
   const target = resolveTarget(cfg, args.flags.target);
+  refuseImplicitTarget(cfg, target, selected);
   await waitReady(cfg, target);
   const stamp = new Date().toISOString();
   const recorded = [];

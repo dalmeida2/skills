@@ -29,7 +29,7 @@ specs/fixtures/
 ```json
 {
   "targets": {
-    "default": { "baseUrl": "${ORACLE_DEFAULT_URL:-http://127.0.0.1:3000}", "env": { "DATABASE_URL": "${ORACLE_DEFAULT_DATABASE_URL}" } },
+    "default": { "baseUrl": "${ORACLE_DEFAULT_URL}", "env": { "DATABASE_URL": "${ORACLE_DEFAULT_DATABASE_URL}" } },
     "a":       { "baseUrl": "${ORACLE_A_URL}", "env": { "DATABASE_URL": "${ORACLE_A_DATABASE_URL}" } },
     "b":       { "baseUrl": "${ORACLE_B_URL}", "env": { "DATABASE_URL": "${ORACLE_B_DATABASE_URL}" } }
   },
@@ -43,6 +43,7 @@ specs/fixtures/
 ```
 
 - Machine-specific values come only from `${VAR}` / `${VAR:-default}`, so the frozen file is identical for every build.
+- **A target that runs setup hooks names its own build and database.** A `:-` fallback is a guess about which app and database are under test, and `reset` truncates whatever it points at. When a run would execute a hook and any value of the target or the hook came from a fallback, the oracle refuses before sending a request (`ORACLE_TARGET_IMPLICIT`, listing the variables to export). Runs with no hooks only read and may use fallbacks. Prefer no fallback in `targets` at all.
 - `reset` ! restore the same starting state before every case (truncate + seed). Cases ⊥ depend on each other's order.
 - `adapters.sql` ! print the result rows as one JSON array. SQL in cases ! have `ORDER BY` whenever it can return more than one row.
 - `variablePaths` ! mirror SPEC §Equivalence Boundary — at minimum `$.detail` (ERR-2, http; enforced by `sdd.cjs check`), `$.error.detail` (CLI-2, cli; enforced), every server-generated id and timestamp (SER-2, SER-3) and `$.pagination.next_cursor` (PAGE-2).
