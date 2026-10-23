@@ -228,6 +228,7 @@ Evidence is bound to the code it graded (`oracle-standard.md` §Evidence binding
 - **Oracle runs.** A `+sky.2` run report stays valid while the code is unchanged (its tree is derived from the commit it recorded). A report from before `+sky.2` is refused (`EVIDENCE_NO_STAMP`): re-run it.
 - **Freshness.** Evidence no longer has to be newer than the stage start or the lock date. It has to match the current code and lock, so committing a report, writing a stage report after the run, or rebasing without code changes keeps it valid; any change to a file outside `specs/` makes it stale.
 - **Build identity (optional).** An app may send `X-SDD-Build: <commit>` from `GET /healthz` (HTTP-6). The oracle then refuses evidence graded against a build from other code.
+- **Runs that change state need explicit targets.** A run whose cases would execute a setup hook (e.g. `reset`), an SQL query step, a CLI run step or an HTTP write refuses with `ORACLE_TARGET_IMPLICIT` while any target or command value is a guess (a `${VAR:-default}` fallback, or a shell-side default): export `ORACLE_DEFAULT_URL`, `ORACLE_DEFAULT_DATABASE_URL` (or your project's equivalents) before grading. No re-freeze needed.
 - **Token audits.** A measured value that cannot be compared with its token (e.g. `var(--x)` against `#FFFFFF`) is refused as `CSS_UNCOMPARABLE` instead of passing; `rem`/`em` (at 16px) and basic colour names are converted.
 
 ## Upgrading a project to `+sky.2`

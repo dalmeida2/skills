@@ -133,6 +133,66 @@ function resolveTarget(cfg, name) {
   return { name, env, baseUrl };
 }
 
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/** What the selected cases would do that can change state, and the command definitions involved. */
+function stateChanges(cfg, cases) {
+  const hooks = [...new Set(cases.flatMap(c => c.setup || cfg.defaultSetup || []))];
+  const defs = hooks.map(h => (cfg.hooks || {})[h]).filter(Boolean);
+  const writes = (r = {}) => !READ_METHODS.has(String(r.method || 'GET').toUpperCase());
+  let writeRequests = 0;
+  let queries = false;
+  for (const c of cases) {
+    for (const st of c.steps || []) {
+      if (st.http && writes(st.http)) writeRequests++;
+      if (Array.isArray(st.parallel)) writeRequests += st.parallel.filter(writes).length;
+      if (st.query) queries = true;
+      if (st.run) defs.push({ cmd: st.run.cmd, args: st.run.args || [], env: st.run.env || {} });
+    }
+  }
+  if (queries && cfg.adapters && cfg.adapters.sql) defs.push(cfg.adapters.sql);
+  const what = [
+    hooks.length && `setup hook(s) ${hooks.join(', ')}`,
+    writeRequests && `${writeRequests} write request(s)`,
+    queries && 'SQL query steps',
+    cases.some(c => (c.steps || []).some(st => st.run)) && 'CLI run steps',
+  ].filter(Boolean);
+  return { what, defs };
+}
+
+/** Shell-side guesses in a command the oracle hands to a shell: `${V-x}`, `${V:=x}`, `${V=x}`, or a bare `$V` that is unset. */
+function shellGuesses(value, env, out) {
+  const unset = n => env[n] === undefined || env[n] === '';
+  for (const v of [value].flat(Infinity)) {
+    if (typeof v !== 'string') continue;
+    for (const m of v.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?:-|:?=)[^}]*\}/g)) if (unset(m[1])) out.push(m[1]);
+    for (const m of v.matchAll(/\$([A-Za-z_][A-Za-z0-9_]*)/g)) if (unset(m[1])) out.push(m[1]);
+  }
+}
+
+/**
+ * A run that would change state (setup hooks, SQL query steps, CLI run steps, or HTTP writes) refuses before any
+ * request when a value of its target, or of a command it would run, is a guess: a `${VAR:-default}` fallback used
+ * because VAR is unset or empty, or a shell-side default. A guessed target is whatever app and database happen to
+ * answer there (#49, M-046, M-048). Read-only case sets may use fallbacks. Only names are printed: fallbacks can hold
+ * credentials.
+ */
+function refuseImplicitTarget(cfg, target, cases) {
+  const { what, defs } = stateChanges(cfg, cases);
+  if (!what.length) return;
+  const t = cfg.targets[target.name] || {};
+  const found = [...L.defaultedVars(t.baseUrl, process.env), ...L.defaultedVars(t.env || {}, process.env)].map(f => f.name);
+  for (const d of defs) {
+    let env = target.env;
+    try { env = { ...target.env, ...L.interpolateEnv(d.env || {}, target.env) }; } catch { /* reported when the command runs */ }
+    found.push(...L.defaultedVars(d.env || {}, target.env).map(f => f.name));
+    found.push(...L.defaultedVars([d.cmd, d.args || []], env).map(f => f.name));
+    shellGuesses([d.cmd, d.args || []], env, found);
+  }
+  if (!found.length) return;
+  fail(`ORACLE_TARGET_IMPLICIT: target "${target.name}" would change state (${what.join('; ')}) using values that were not set: ${[...new Set(found)].join(', ')}. Export them for the build under test, then re-run`);
+}
+
 function lockInfo(p) {
   const v = L.verifyLock(p.root);
   if (!v.exists) return { lockHash: null, lockValid: false, lockVersion: null };
@@ -396,6 +456,7 @@ async function cmdRun(p, args) {
   const { selected, filtered } = selectCases(cases, args.flags, { includeProbes: false });
   if (!selected.length) fail('no cases selected');
   const target = resolveTarget(cfg, typeof args.flags.target === 'string' ? args.flags.target : 'default');
+  refuseImplicitTarget(cfg, target, selected);
   const lock = lockInfo(p);
   if (!lock.lockHash) console.log('⚠ no spec.lock.json yet: results cannot serve as stage evidence until the frozen set is locked');
   else if (!lock.lockValid) console.log('⚠ frozen set modified since the last freeze: results will not count as evidence (sdd.cjs verify)');
@@ -569,6 +630,8 @@ async function cmdDiff(p, args) {
   if (!selected.length) fail('no cases selected');
   const A = resolveTarget(cfg, typeof args.flags.a === 'string' ? args.flags.a : 'a');
   const B = resolveTarget(cfg, typeof args.flags.b === 'string' ? args.flags.b : 'b');
+  refuseImplicitTarget(cfg, A, selected);
+  refuseImplicitTarget(cfg, B, selected);
   if (A.baseUrl === B.baseUrl && JSON.stringify(A.env) === JSON.stringify(B.env)) fail(`targets "${A.name}" and "${B.name}" resolve to the same build (${A.baseUrl}); point them at two independent builds`);
   const observedHeaders = [...new Set([...CONTRACT_HEADERS, ...(cfg.observedHeaders || [])])];
   const lock = lockInfo(p);
@@ -984,6 +1047,7 @@ async function cmdRecord(p, args) {
   const { cfg, cases } = loadProject(p, typeof args.flags['cases-dir'] === 'string' ? args.flags['cases-dir'] : null);
   const { selected } = selectCases(cases, args.flags, { includeProbes: true });
   const target = resolveTarget(cfg, args.flags.target);
+  refuseImplicitTarget(cfg, target, selected);
   await waitReady(cfg, target);
   const stamp = new Date().toISOString();
   const recorded = [];
